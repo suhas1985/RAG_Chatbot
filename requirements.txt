@@ -3,6 +3,5 @@ PyPDF2==2.10.3
 python-docx==0.8.11
 pptx==0.6.21
 Pillow==9.2.0
-google-cloud-gemini==1.0.0
 langchain==1.0.0
-faiss==1.7.2
+faiss-cpu==1.7.2
