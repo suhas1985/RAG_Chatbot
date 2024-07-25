@@ -1,0 +1,8 @@
+streamlit
+PyPDF2
+python-docx
+pptx
+Pillow
+google-cloud-gemini
+langchain
+faiss
