@@ -1,8 +1,5 @@
-streamlit
-google-generativeai
+openai
 langchain
-PyPDF2
-chromadb
 faiss-cpu
-langchain-google-genai
-os
+pypdf
+tiktoken
