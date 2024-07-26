@@ -1,115 +1,94 @@
-# Import necessary libraries
-import databutton as db
 import streamlit as st
-import openai
-from brain import get_index_for_pdf
-from langchain.chains import RetrievalQA
-from langchain.chat_models import ChatOpenAI
+from PyPDF2 import PdfReader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+import google.generativeai as genai
+from langchain.vectorstores import FAISS
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.chains.question_answering import load_qa_chain
+from langchain.prompts import PromptTemplate
 import os
 
-# Set the title for the Streamlit app
-st.title("RAG enhanced Chatbot")
+st.set_page_config(page_title="Document Repository", layout="wide")
 
-# Set up the OpenAI API key from databutton secrets
-os.environ["OPENAI_API_KEY"] = db.secrets.get("OPENAI_API_KEY")
-openai.api_key = db.secrets.get("OPENAI_API_KEY")
+st.markdown("""
+## Document Genie: Get instant insights from your Documents
+
+This chatbot is built using the Retrieval-Augmented Generation (RAG) framework, leveraging Google's Generative AI model Gemini-PRO. It processes uploaded PDF documents by breaking them down into manageable chunks, creates a searchable vector store, and generates accurate answers to user queries. This advanced approach ensures high-quality, contextually relevant responses for an efficient and effective user experience.
+
+### How It Works
+
+Follow these simple steps to interact with the chatbot:
+
+1. **Enter Your API Key**: You'll need a Google API key for the chatbot to access Google's Generative AI models. Obtain your API key https://makersuite.google.com/app/apikey.
+
+2. **Upload Your Documents**: The system accepts multiple PDF files at once, analyzing the content to provide comprehensive insights.
+
+3. **Ask a Question**: After processing the documents, ask any question related to the content of your uploaded documents for a precise answer.
+""")
 
 
-# Cached function to create a vectordb for the provided PDF files
-@st.cache_data
-def create_vectordb(files, filenames):
-    # Show a spinner while creating the vectordb
-    with st.spinner("Vector database"):
-        vectordb = get_index_for_pdf(
-            [file.getvalue() for file in files], filenames, openai.api_key
-        )
-    return vectordb
 
+# This is the first API key input; no need to repeat it in the main function.
+api_key = st.text_input("Enter your Google API Key:", type="password", key="api_key_input")
 
-# Upload PDF files using Streamlit's file uploader
-pdf_files = st.file_uploader("", type="pdf", accept_multiple_files=True)
+def get_pdf_text(pdf_docs):
+    text = ""
+    for pdf in pdf_docs:
+        pdf_reader = PdfReader(pdf)
+        for page in pdf_reader.pages:
+            text += page.extract_text()
+    return text
 
-# If PDF files are uploaded, create the vectordb and store it in the session state
-if pdf_files:
-    pdf_file_names = [file.name for file in pdf_files]
-    st.session_state["vectordb"] = create_vectordb(pdf_files, pdf_file_names)
+def get_text_chunks(text):
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000)
+    chunks = text_splitter.split_text(text)
+    return chunks
 
-# Define the template for the chatbot prompt
-prompt_template = """
-    You are a helpful Assistant who answers to users questions based on multiple contexts given to you.
+def get_vector_store(text_chunks, api_key):
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=api_key)
+    vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
+    vector_store.save_local("faiss_index")
 
-    Keep your answer short and to the point.
-    
-    The evidence are the context of the pdf extract with metadata. 
-    
-    Carefully focus on the metadata specially 'filename' and 'page' whenever answering.
-    
-    Make sure to add filename and page number at the end of sentence you are citing to.
-        
-    Reply "Not applicable" if text is irrelevant.
-     
-    The PDF content is:
-    {pdf_extract}
-"""
+def get_conversational_chain():
+    prompt_template = """
+    Answer the question as detailed as possible from the provided context, make sure to provide all the details, if the answer is not in
+    provided context just say, "answer is not available in the context", don't provide the wrong answer\n\n
+    Context:\n {context}?\n
+    Question: \n{question}\n
 
-# Get the current prompt from the session state or set a default value
-prompt = st.session_state.get("prompt", [{"role": "system", "content": "none"}])
+    Answer:
+    """
+    model = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.3, google_api_key=api_key)
+    prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
+    chain = load_qa_chain(model, chain_type="stuff", prompt=prompt)
+    return chain
 
-# Display previous chat messages
-for message in prompt:
-    if message["role"] != "system":
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
+def user_input(user_question, api_key):
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=api_key)
+    new_db = FAISS.load_local("faiss_index", embeddings)
+    docs = new_db.similarity_search(user_question)
+    chain = get_conversational_chain()
+    response = chain({"input_documents": docs, "question": user_question}, return_only_outputs=True)
+    st.write("Reply: ", response["output_text"])
 
-# Get the user's question using Streamlit's chat input
-question = st.chat_input("Ask anything")
+def main():
+    st.header("AI clone chatbot💁")
 
-# Handle the user's question
-if question:
-    vectordb = st.session_state.get("vectordb", None)
-    if not vectordb:
-        with st.message("assistant"):
-            st.write("You need to provide a PDF")
-            st.stop()
+    user_question = st.text_input("Ask a Question from the PDF Files", key="user_question")
 
-    # Search the vectordb for similar content to the user's question
-    search_results = vectordb.similarity_search(question, k=3)
-    # search_results
-    pdf_extract = "/n ".join([result.page_content for result in search_results])
+    if user_question and api_key:  # Ensure API key and user question are provided
+        user_input(user_question, api_key)
 
-    # Update the prompt with the pdf extract
-    prompt[0] = {
-        "role": "system",
-        "content": prompt_template.format(pdf_extract=pdf_extract),
-    }
+    with st.sidebar:
+        st.title("Menu:")
+        pdf_docs = st.file_uploader("Upload your PDF Files and Click on the Submit & Process Button", accept_multiple_files=True, key="pdf_uploader")
+        if st.button("Submit & Process", key="process_button") and api_key:  # Check if API key is provided before processing
+            with st.spinner("Processing..."):
+                raw_text = get_pdf_text(pdf_docs)
+                text_chunks = get_text_chunks(raw_text)
+                get_vector_store(text_chunks, api_key)
+                st.success("Done")
 
-    # Add the user's question to the prompt and display it
-    prompt.append({"role": "user", "content": question})
-    with st.chat_message("user"):
-        st.write(question)
-
-    # Display an empty assistant message while waiting for the response
-    with st.chat_message("assistant"):
-        botmsg = st.empty()
-
-    # Call ChatGPT with streaming and display the response as it comes
-    response = []
-    result = ""
-    for chunk in openai.ChatCompletion.create(
-        model="gpt-3.5-turbo", messages=prompt, stream=True
-    ):
-        text = chunk.choices[0].get("delta", {}).get("content")
-        if text is not None:
-            response.append(text)
-            result = "".join(response).strip()
-            botmsg.write(result)
-
-    # Add the assistant's response to the prompt
-    prompt.append({"role": "assistant", "content": result})
-
-    # Store the updated prompt in the session state
-    st.session_state["prompt"] = prompt
-    prompt.append({"role": "assistant", "content": result})
-
-    # Store the updated prompt in the session state
-    st.session_state["prompt"] = prompt
+if __name__ == "__main__":
+    main()
